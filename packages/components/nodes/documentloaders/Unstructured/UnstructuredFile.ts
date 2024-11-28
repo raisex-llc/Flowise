@@ -6,7 +6,7 @@ import {
     SkipInferTableTypes,
     HiResModelName,
     UnstructuredLoader as LCUnstructuredLoader
-} from 'langchain/document_loaders/fs/unstructured'
+} from '@langchain/community/document_loaders/fs/unstructured'
 import { getCredentialData, getCredentialParam } from '../../../src/utils'
 import { getFileFromStorage } from '../../../src'
 import { UnstructuredLoader } from './Unstructured'
@@ -26,7 +26,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
     constructor() {
         this.label = 'Unstructured File Loader'
         this.name = 'unstructuredFileLoader'
-        this.version = 3.0
+        this.version = 4.0
         this.type = 'Document'
         this.icon = 'unstructured-file.svg'
         this.category = 'Document Loaders'
@@ -40,6 +40,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
             optional: true
         }
         this.inputs = [
+            /** Deprecated
             {
                 label: 'File Path',
                 name: 'filePath',
@@ -49,6 +50,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
                 warning:
                     'Use the File Upload instead of File path. If file is uploaded, this path is ignored. Path will be deprecated in future releases.'
             },
+             */
             {
                 label: 'Files Upload',
                 name: 'fileObject',
@@ -61,9 +63,10 @@ class UnstructuredFile_DocumentLoaders implements INode {
                 label: 'Unstructured API URL',
                 name: 'unstructuredAPIUrl',
                 description:
-                    'Unstructured API URL. Read <a target="_blank" href="https://unstructured-io.github.io/unstructured/introduction.html#getting-started">more</a> on how to get started',
+                    'Unstructured API URL. Read <a target="_blank" href="https://docs.unstructured.io/api-reference/api-services/saas-api-development-guide">more</a> on how to get started',
                 type: 'string',
-                default: 'http://localhost:8000/general/v0/general'
+                placeholder: process.env.UNSTRUCTURED_API_URL || 'http://localhost:8000/general/v0/general',
+                optional: !!process.env.UNSTRUCTURED_API_URL
             },
             {
                 label: 'Strategy',
@@ -199,7 +202,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
             {
                 label: 'Hi-Res Model Name',
                 name: 'hiResModelName',
-                description: 'The name of the inference model used when strategy is hi_res. Default: detectron2_onnx.',
+                description: 'The name of the inference model used when strategy is hi_res',
                 type: 'options',
                 options: [
                     {
@@ -226,8 +229,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
                     }
                 ],
                 optional: true,
-                additionalParams: true,
-                default: 'detectron2_onnx'
+                additionalParams: true
             },
             {
                 label: 'Chunking Strategy',
@@ -241,8 +243,20 @@ class UnstructuredFile_DocumentLoaders implements INode {
                         name: 'None'
                     },
                     {
+                        label: 'Basic',
+                        name: 'basic'
+                    },
+                    {
                         label: 'By Title',
                         name: 'by_title'
+                    },
+                    {
+                        label: 'By Page',
+                        name: 'by_page'
+                    },
+                    {
+                        label: 'By Similarity',
+                        name: 'by_similarity'
                     }
                 ],
                 optional: true,
@@ -433,22 +447,31 @@ class UnstructuredFile_DocumentLoaders implements INode {
             : ([] as SkipInferTableTypes[])
         const hiResModelName = nodeData.inputs?.hiResModelName as HiResModelName
         const includePageBreaks = nodeData.inputs?.includePageBreaks as boolean
-        const chunkingStrategy = nodeData.inputs?.chunkingStrategy as 'None' | 'by_title'
+        const chunkingStrategy = nodeData.inputs?.chunkingStrategy as string
         const metadata = nodeData.inputs?.metadata
         const sourceIdKey = (nodeData.inputs?.sourceIdKey as string) || 'source'
         const ocrLanguages = nodeData.inputs?.ocrLanguages ? JSON.parse(nodeData.inputs?.ocrLanguages as string) : ([] as string[])
         const xmlKeepTags = nodeData.inputs?.xmlKeepTags as boolean
         const multiPageSections = nodeData.inputs?.multiPageSections as boolean
-        const combineUnderNChars = nodeData.inputs?.combineUnderNChars as number
-        const newAfterNChars = nodeData.inputs?.newAfterNChars as number
-        const maxCharacters = nodeData.inputs?.maxCharacters as number
+        const combineUnderNChars = nodeData.inputs?.combineUnderNChars as string
+        const newAfterNChars = nodeData.inputs?.newAfterNChars as string
+        const maxCharacters = nodeData.inputs?.maxCharacters as string
         const _omitMetadataKeys = nodeData.inputs?.omitMetadataKeys as string
 
         let omitMetadataKeys: string[] = []
         if (_omitMetadataKeys) {
             omitMetadataKeys = _omitMetadataKeys.split(',').map((key) => key.trim())
         }
-        const fileBase64 = nodeData.inputs?.fileObject as string
+        // give priority to upload with upsert then to fileObject (upload from UI component)
+        const fileBase64 =
+            nodeData.inputs?.pdfFile ||
+            nodeData.inputs?.txtFile ||
+            nodeData.inputs?.yamlFile ||
+            nodeData.inputs?.docxFile ||
+            nodeData.inputs?.jsonlinesFile ||
+            nodeData.inputs?.csvFile ||
+            nodeData.inputs?.jsonFile ||
+            (nodeData.inputs?.fileObject as string)
 
         const obj: UnstructuredLoaderOptions = {
             apiUrl: unstructuredAPIUrl,
@@ -461,10 +484,19 @@ class UnstructuredFile_DocumentLoaders implements INode {
             chunkingStrategy,
             ocrLanguages,
             xmlKeepTags,
-            multiPageSections,
-            combineUnderNChars,
-            newAfterNChars,
-            maxCharacters
+            multiPageSections
+        }
+
+        if (combineUnderNChars) {
+            obj.combineUnderNChars = parseInt(combineUnderNChars, 10)
+        }
+
+        if (newAfterNChars) {
+            obj.newAfterNChars = parseInt(newAfterNChars, 10)
+        }
+
+        if (maxCharacters) {
+            obj.maxCharacters = parseInt(maxCharacters, 10)
         }
 
         const credentialData = await getCredentialData(nodeData.credential ?? '', options)
@@ -487,6 +519,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
                 const chatflowid = options.chatflowid
 
                 for (const file of files) {
+                    if (!file) continue
                     const fileData = await getFileFromStorage(file, chatflowid)
                     const loaderDocs = await loader.loadAndSplitBuffer(fileData, file)
                     docs.push(...loaderDocs)
@@ -499,6 +532,7 @@ class UnstructuredFile_DocumentLoaders implements INode {
                 }
 
                 for (const file of files) {
+                    if (!file) continue
                     const splitDataURI = file.split(',')
                     const filename = splitDataURI.pop()?.split(':')[1] ?? ''
                     const bf = Buffer.from(splitDataURI.pop() || '', 'base64')
